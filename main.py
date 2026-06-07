@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware # Yeh nayi line hai
 from typing import List, Dict
 from datetime import datetime
 import pandas as pd
@@ -6,7 +7,16 @@ import io
 
 app = FastAPI(title="Kadak WMS Backend")
 
-# 1. Fake Orders Data
+# SYSTEM LOCK OPEN: Isse hamara frontend dashboard backend se baat kar payega
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Sabhi platforms ko allow karne ke liye
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ... (Iske neeche ka baki saara code bilkul purana hi rehne do, use mat badlo)# 1. Fake Orders Data
 DUMMY_ORDERS = [
     {"order_no": "404-4816343-4371107", "channel": "Amazon", "status": "Allocated", "sku": "BJHND001"},
     {"order_no": "ORD-MEESHO-9921", "channel": "Meesho", "status": "Allocated", "sku": "JAPA-MALA"}

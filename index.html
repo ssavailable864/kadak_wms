@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kadak WMS Dashboard</title>
+    <style>
+        /* EKDAM HATKE UNIQUE DARK THEME DESIGN */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            margin: 0;
+            padding: 20px;
+        }
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #1e293b;
+            padding-bottom: 20px;
+            margin-bottom: 20px;
+        }
+        h1 { margin: 0; color: #38bdf8; }
+        .wms-table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: #1e293b;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        .wms-table th {
+            background-color: #0284c7;
+            color: white;
+            padding: 12px 15px;
+            text-align: left;
+            font-size: 14px;
+        }
+        .wms-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #334155;
+            font-size: 14px;
+        }
+        .wms-table tr:hover { background-color: #334155; }
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .badge-amazon { background-color: #ff9900; color: black; }
+        .badge-meesho { background-color: #9e1f63; color: white; }
+        .badge-status { background-color: #22c55e; color: white; }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard-header">
+        <h1>Kadak WMS Live Orders Dashboard</h1>
+        <div id="server-status" style="color: #22c55e; font-weight: bold;">● Backend Connected</div>
+    </div>
+
+    <table class="wms-table">
+        <thead>
+            <tr>
+                <th>Order No</th>
+                <th>Channel</th>
+                <th>SKU</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody id="orders-list">
+            <tr>
+                <td colspan="4" style="text-align: center;">Bhai ruko, data load ho raha hai...</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <script>
+        // BACKEND SE LIVE DATA FETCH KARNE KA MAGIC CODE
+        async def loadOrders() {
+            try {
+                let response = await fetch('http://127.0.0.1:8000/api/orders');
+                let orders = await response.json();
+                
+                let tableBody = document.getElementById('orders-list');
+                tableBody.innerHTML = ''; // Purana loading text saaf karne ke liye
+                
+                orders.forEach(order => {
+                    let channelBadge = order.channel === 'Amazon' ? 'badge-amazon' : 'badge-meesho';
+                    
+                    let row = `<tr>
+                        <td style="font-weight: bold; color: #f1f5f9;">${order.order_no}</td>
+                        <td><span class="badge ${channelBadge}">${order.channel}</span></td>
+                        <td style="color: #38bdf8;">${order.sku}</td>
+                        <td><span class="badge badge-status">${order.status}</span></td>
+                    </tr>`;
+                    tableBody.innerHTML += row;
+                });
+            } catch (error) {
+                document.getElementById('server-status').innerText = '● Backend Disconnected';
+                document.getElementById('server-status').style.color = '#ef4444';
+            }
+        }
+
+        // Page khulte hi function automatic chal jaye
+        loadOrders();
+    </script>
+</body>
+</html>
