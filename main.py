@@ -1,102 +1,118 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware # Yeh nayi line hai
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict
-from datetime import datetime
 import pandas as pd
 import io
+import sqlite3
 
 app = FastAPI(title="Kadak WMS Backend")
 
-# SYSTEM LOCK OPEN: Isse hamara frontend dashboard backend se baat kar payega
+# SYSTEM LOCK OPEN (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Sabhi platforms ko allow karne ke liye
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ... (Iske neeche ka baki saara code bilkul purana hi rehne do, use mat badlo)# 1. Fake Orders Data
+# DUMMY ORDERS (Marketplace se aaye huye)
 DUMMY_ORDERS = [
     {"order_no": "404-4816343-4371107", "channel": "Amazon", "status": "Allocated", "sku": "BJHND001"},
     {"order_no": "ORD-MEESHO-9921", "channel": "Meesho", "status": "Allocated", "sku": "JAPA-MALA"}
 ]
 
-# 2. Dynamic Bundle Mapping (Ab yeh khaali hai, client excel se bharega!)
-BUNDLE_MAPPING = {}
+# ASALI DATABASE INIT (Tijori Setup)
+def init_db():
+    conn = sqlite3.connect("wms_tijori.db")
+    cursor = conn.cursor()
+    # Permanent table banana bundle mapping ke liye
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bundle_mappings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bundle_sku TEXT,
+            child_sku TEXT,
+            quantity INTEGER,
+            rack_location TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-TRACK_PICKLISTS = {}
-picklist_counter = 1
+# Server chalu hote hi table automatic ban jayegi
+init_db()
 
 @app.get("/")
 def home():
-    return {"status": "Online", "message": "Bhai, WMS server ekdam mast chal raha hai!"}
+    return {"status": "Online", "message": "Bhai, Database Connect ho gaya hai!"}
 
 @app.get("/api/orders")
 def get_all_orders():
     return DUMMY_ORDERS
 
-# 3. KADAK FEATURE: Client Side Bulk Excel Upload for Bundle Mapping
+# 1. KADAK FEATURE: Bulk Excel Upload Se Asali Database Me Data Daalna
 @app.post("/api/upload-mapping")
 async def upload_bundle_mapping(file: UploadFile = File(...)):
-    global BUNDLE_MAPPING
-    
-    # Check karna ki file sirf Excel (.xlsx) hi ho
     if not file.filename.endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="Bhai ruko, sirf Excel (.xlsx) file hi upload karo!")
+        raise HTTPException(status_code=400, detail="Bhai ruko, sirf Excel (.xlsx) file hi chalegi!")
     
     try:
-        # Excel file ko read karna binary format se
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
         
-        # Pehle se agar koi mapping hai toh use fresh karne ke liye clear kar sakte hain
-        new_mapping = {}
+        conn = sqlite3.connect("wms_tijori.db")
+        cursor = conn.cursor()
         
-        # Excel ki har ek row ko check karna aur system me dalna
+        # Purana data clear karna taaki naya excel master fresh upload ho ske
+        cursor.execute("DELETE FROM bundle_mappings")
+        
+        # Excel ki ek ek row ko database me save karna
         for index, row in df.iterrows():
-            parent_sku = str(row['Bundle_SKU']).strip()
+            bundle_sku = str(row['Bundle_SKU']).strip()
             child_sku = str(row['Child_SKU']).strip()
             qty = int(row['Quantity'])
             rack = str(row.get('Rack_Location', 'General-Rack')).strip()
             
-            # Agar bundle naya hai, toh uski list banao
-            if parent_sku not in new_mapping:
-                new_mapping[parent_sku] = []
-                
-            new_mapping[parent_sku].append({
-                "child_sku": child_sku,
-                "qty": qty,
-                "rack_location": rack
-            })
+            cursor.execute("""
+                INSERT INTO bundle_mappings (bundle_sku, child_sku, quantity, rack_location)
+                VALUES (?, ?, ?, ?)
+            """, (bundle_sku, child_sku, qty, rack))
             
-        # Hamari main dynamic data tijori ko update kar dena
-        BUNDLE_MAPPING = new_mapping
+        conn.commit()
+        conn.close()
         
-        return {
-            "status": "Success", 
-            "message": f"Bhai, total {len(df)} rows check ho gayi aur bundle mapping live update ho gayi!"
-        }
+        return {"status": "Success", "message": f"Bhai, total {len(df)} rows database me safe save ho gayi!"}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Excel processing me kuch galti hui: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Excel columns sahi nahi hain: {str(e)}")
 
-# 4. Picklist Generation (Jo ab dynamic bundle mapping use karega)
+# 2. KADAK FEATURE: Database Se Dynamic Data Nikal Kar Picklist Split Karna
 @app.get("/api/picklist-preview")
 def preview_picklist():
     final_picklist = []
+    
+    conn = sqlite3.connect("wms_tijori.db")
+    cursor = conn.cursor()
+    
     for order in DUMMY_ORDERS:
         sku_naam = order["sku"]
-        if sku_naam in BUNDLE_MAPPING:
-            for item in BUNDLE_MAPPING[sku_naam]:
+        
+        # Database me check karna ki kya yeh SKU ek bundle hai?
+        cursor.execute("SELECT child_sku, quantity, rack_location FROM bundle_mappings WHERE bundle_sku = ?", (sku_naam,))
+        components = cursor.fetchall()
+        
+        if components:
+            # Agar bundle mil gaya database me, toh use split karke daalo
+            for row in components:
                 final_picklist.append({
                     "order_no": order["order_no"],
-                    "sku": item["child_sku"],
-                    "qty": item["qty"],
-                    "rack": item["rack_location"],
+                    "sku": row[0],
+                    "qty": row[1],
+                    "rack": row[2],
                     "type": "Bundle Split Item"
                 })
         else:
+            # Varna normal entry rehne do
             final_picklist.append({
                 "order_no": order["order_no"],
                 "sku": order["sku"],
@@ -104,4 +120,6 @@ def preview_picklist():
                 "rack": "General-Rack",
                 "type": "Single Item"
             })
+            
+    conn.close()
     return {"items": final_picklist}
