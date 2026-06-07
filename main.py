@@ -1,24 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from typing import List, Dict
 from datetime import datetime
+import pandas as pd
+import io
 
 app = FastAPI(title="Kadak WMS Backend")
 
 # 1. Fake Orders Data
 DUMMY_ORDERS = [
     {"order_no": "404-4816343-4371107", "channel": "Amazon", "status": "Allocated", "sku": "BJHND001"},
-    {"order_no": "ORD-MEESHO-9921", "channel": "Meesho", "status": "Allocated", "sku": "JAPA-MALA"},
-    {"order_no": "ORD-FLIPKART-8832", "channel": "Flipkart", "status": "Allocated", "sku": "BG-HINDI"}
+    {"order_no": "ORD-MEESHO-9921", "channel": "Meesho", "status": "Allocated", "sku": "JAPA-MALA"}
 ]
 
-BUNDLE_MAPPING = {
-    "BJHND001": [
-        {"child_sku": "BG-HINDI", "qty": 1, "rack_location": "Rack-A1"},
-        {"child_sku": "JAPA-MALA", "qty": 1, "rack_location": "Rack-B4"}
-    ]
-}
+# 2. Dynamic Bundle Mapping (Ab yeh khaali hai, client excel se bharega!)
+BUNDLE_MAPPING = {}
 
-# 2. Master Picklist Storage (Hamari Picklist ki Tijori)
 TRACK_PICKLISTS = {}
 picklist_counter = 1
 
@@ -26,64 +22,76 @@ picklist_counter = 1
 def home():
     return {"status": "Online", "message": "Bhai, WMS server ekdam mast chal raha hai!"}
 
-# 3. KADAK FEATURE: Generate Unique Picklist No & Assign Picker
-@app.post("/api/create-picklist")
-def create_picklist(picker_name: str):
-    global picklist_counter
+@app.get("/api/orders")
+def get_all_orders():
+    return DUMMY_ORDERS
+
+# 3. KADAK FEATURE: Client Side Bulk Excel Upload for Bundle Mapping
+@app.post("/api/upload-mapping")
+async def upload_bundle_mapping(file: UploadFile = File(...)):
+    global BUNDLE_MAPPING
     
-    # Unique Picklist No Generate Karna
-    picklist_no = f"PK-{datetime.now().year}-00{picklist_counter}"
-    picklist_counter += 1
+    # Check karna ki file sirf Excel (.xlsx) hi ho
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Bhai ruko, sirf Excel (.xlsx) file hi upload karo!")
     
-    items_to_pick = []
-    
-    # Saare allocated orders ko is picklist me daalna aur split karna
+    try:
+        # Excel file ko read karna binary format se
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
+        
+        # Pehle se agar koi mapping hai toh use fresh karne ke liye clear kar sakte hain
+        new_mapping = {}
+        
+        # Excel ki har ek row ko check karna aur system me dalna
+        for index, row in df.iterrows():
+            parent_sku = str(row['Bundle_SKU']).strip()
+            child_sku = str(row['Child_SKU']).strip()
+            qty = int(row['Quantity'])
+            rack = str(row.get('Rack_Location', 'General-Rack')).strip()
+            
+            # Agar bundle naya hai, toh uski list banao
+            if parent_sku not in new_mapping:
+                new_mapping[parent_sku] = []
+                
+            new_mapping[parent_sku].append({
+                "child_sku": child_sku,
+                "qty": qty,
+                "rack_location": rack
+            })
+            
+        # Hamari main dynamic data tijori ko update kar dena
+        BUNDLE_MAPPING = new_mapping
+        
+        return {
+            "status": "Success", 
+            "message": f"Bhai, total {len(df)} rows check ho gayi aur bundle mapping live update ho gayi!"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Excel processing me kuch galti hui: {str(e)}")
+
+# 4. Picklist Generation (Jo ab dynamic bundle mapping use karega)
+@app.get("/api/picklist-preview")
+def preview_picklist():
+    final_picklist = []
     for order in DUMMY_ORDERS:
         sku_naam = order["sku"]
         if sku_naam in BUNDLE_MAPPING:
             for item in BUNDLE_MAPPING[sku_naam]:
-                items_to_pick.append({
+                final_picklist.append({
                     "order_no": order["order_no"],
                     "sku": item["child_sku"],
                     "qty": item["qty"],
                     "rack": item["rack_location"],
-                    "item_status": "Pending" # Shuruat me pending rahega
+                    "type": "Bundle Split Item"
                 })
         else:
-            items_to_pick.append({
+            final_picklist.append({
                 "order_no": order["order_no"],
                 "sku": order["sku"],
                 "qty": 1,
                 "rack": "General-Rack",
-                "item_status": "Pending"
+                "type": "Single Item"
             })
-            
-    # Picklist ka master record save karna
-    TRACK_PICKLISTS[picklist_no] = {
-        "picklist_no": picklist_no,
-        "assigned_to": picker_name,          # Kisko assign kiya (e.g., Ramesh)
-        "total_items": len(items_to_pick),
-        "picked_count": 0,                   # Kitna pick hua hai
-        "status": "In-Progress",             # Status: In-Progress, Picked
-        "items": items_to_pick
-    }
-    
-    return {"message": f"Bhai, unique {picklist_no} generate ho gayi!", "data": TRACK_PICKLISTS[picklist_no]}
-
-# 4. KADAK FEATURE: Strict Rule - Only Picked items can be Packed
-@app.post("/api/pack-order")
-def pack_order(picklist_no: str, order_no: str):
-    # Check karo ki picklist exist karti hai ya nahi
-    if picklist_no not in TRACK_PICKLISTS:
-        raise HTTPException(status_code=404, detail="Bhai, yeh picklist number galat hai!")
-        
-    picklist_data = TRACK_PICKLISTS[picklist_no]
-    
-    # STRICT RULE CHECK: Agar picklist status 'Picked' nahi hai, toh packing block!
-    if picklist_data["status"] != "Picked":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Bhai Ruko! Picklist {picklist_no} abhi fully Picked nahi hui hai. Part wale ko pack nahi kar sakte!"
-        )
-        
-    return {"status": "Success", "message": f"Order {order_no} successfully Packed ho gaya!"}
+    return {"items": final_picklist}
